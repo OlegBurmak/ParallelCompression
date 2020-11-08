@@ -9,37 +9,48 @@ namespace GzipStreamTest
 {
     public class ParallelCompressed : BaseCompressed
     {
-        private FileInfo fileInfo;
-        private FileStream targetStream;
+        FileInfo outInfo;
         public ParallelCompressed(string input, string output)
         {
             AddFile(input, output);
         }
 
-        private void AddFile(string input, string output)
+        internal override void AddFile(string input, string output)
         {
-            using(FileStream stream = File.Create(output))
+            outInfo = new FileInfo(output);
+            if(outInfo.Extension == "")
             {
-                fileInfo = new FileInfo(input);
-                targetStream = stream;
-                CheckFileSize(fileInfo);
-                System.Console.WriteLine("Success");
+                outInfo = new FileInfo(outInfo.FullName + ".gz");
+            }
+            using(FileStream stream = outInfo.Create())
+            {
+                FileInfo = new FileInfo(input);
+                TargetStream = stream;
+                FileHelper = new FileHelper(TargetStream);
+                CheckFileSize(FileInfo);
             }
         }
 
-        private void CheckFileSize(FileInfo fileI)
+        internal override void CheckFileSize(FileInfo fileI)
         {
-            if(fileI.Length > 6000000)
+            if(fileI.Length > 1000000)
             {
-                CompressFile(fileI);
+                System.Console.WriteLine("Start of compression");
             }
+            else
+            {
+                System.Console.WriteLine("Start of compression, but since the file is small, it is possible to increase the size of the archive in relation to the original file");
+            }
+            CompressFile(fileI);
         }
 
 
         private void CompressFile(FileInfo fileI)
         {
+
             var blockCount = GetBlockCount(fileI.Length);
             var blockSizeArray = GetBlockSizeArray(fileI.Length, blockCount);
+            FileHelper.AddFileInfo(new DataFile(fileI.Name, blockCount*CorsCount, fileI.Extension));
             
             using(FileStream sourceStream = fileI.OpenRead())
             {
@@ -53,15 +64,15 @@ namespace GzipStreamTest
                     {
                         var bytes = new byte[data[j]];
                         sourceStream.Read(bytes, 0, bytes.Length);
+                        //Perform parallel compression, the result is written to the task array
                         resultData[j] = Task.Run(() => CompressBlock(bytes));
                     }
 
                     Task.WaitAll(resultData);
                     WriteToFile(resultData.ToArray());
                 }
-
-
             }
+            System.Console.WriteLine($"End of compression OutFile: {outInfo.FullName}");
         }
 
         private void WriteToFile(Task<byte[]>[] data)
@@ -69,8 +80,9 @@ namespace GzipStreamTest
             var result = data.Select(r => r.Result).ToArray();
             foreach(var res in result)
             {
-                targetStream.Write(res, 0, res.Length);
-                System.Console.WriteLine("Woop");
+                //Write block size info
+                TargetStream.Write(BitConverter.GetBytes(res.Length), 0, 4);
+                TargetStream.Write(res, 0, res.Length);
             }
         }
 
@@ -78,7 +90,7 @@ namespace GzipStreamTest
         {
             using(var compressedStream = new MemoryStream())
             {
-                using(var zipStream = new GZipStream(compressedStream, CompressionLevel.Optimal))
+                using(var zipStream = new GZipStream(compressedStream, CompressionMode.Compress))
                 {
                     zipStream.Write(data, 0, data.Length);
                     zipStream.Close();
@@ -98,6 +110,7 @@ namespace GzipStreamTest
             return blocks;
         }
 
+        //Get the correct number of blocks for parallel execution
         private int GetBlockCount(long fileLength)
         {
             var result = (float)((fileLength/PortionSize)/CorsCount);
